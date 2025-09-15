@@ -1,0 +1,268 @@
+---
+title: "Optimizing Advertising Budget Allocation"
+author: "Kendra Mosholder"
+output: html_document
+---
+
+# Introduction
+
+This analysis addresses a common business challenge: how to allocate a fixed advertising budget across multiple channels to maximize sales.  
+Using a dataset of advertising spend on TV, radio, and newspapers, I applied regression models and budget simulations to evaluate each channel’s effectiveness.  
+
+The goal was to identify the most profitable allocation strategy while highlighting channel interactions, potential diminishing returns, and the limits of the available data.
+
+---
+
+# Packages
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(tidyverse)
+library(viridis)
+```
+
+---
+
+# Data
+
+```{r}
+csv_path <- "C:/Users/Kendra/OneDrive/Documents/Data analysis/advertising.csv"
+
+ads <- read.csv(csv_path, stringsAsFactors = FALSE)
+names(ads) <- tolower(names(ads))
+
+stopifnot(all(c("tv","radio","newspaper","sales") %in% names(ads)))
+dim(ads)
+summary(ads[, c("tv","radio","newspaper","sales")])
+```
+
+## Insights
+- 200 observations and 4 variables.
+- TV spend up to ~296k, Radio up to ~50k, Newspaper up to ~114k, Sales up to ~27k.
+- Data is clean and ready for analysis.
+
+---
+
+# Exploratory Data Analysis
+
+```{r scatterplots, fig.width=9, fig.height=4}
+ads_long <- ads %>%
+  select(sales, tv, radio, newspaper) %>%
+  rename(TV = tv, Radio = radio, Newspaper = newspaper) %>%
+  pivot_longer(c(TV, Radio, Newspaper), names_to = "Channel", values_to = "Spend")
+
+ggplot(ads_long, aes(x = Spend, y = sales)) +
+  geom_point(alpha = 0.8, size = 2, color = viridis(3)[2]) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = viridis(3)[1]) +
+  facet_wrap(~ Channel, nrow = 1, scales = "free_x") +
+  labs(title = "Sales vs Advertising Spend by Channel",
+       x = "Ad Spend ($000s)", y = "Sales ($000s)") +
+  theme_minimal(base_size = 13)
+```
+
+## Insights
+- TV has the strongest positive relationship with sales.  
+- Radio shows a moderate positive relationship.  
+- Newspaper shows little to no relationship with sales.  
+
+---
+
+# Baseline Regression
+
+```{r}
+base_model <- lm(sales ~ tv + radio + newspaper, data = ads)
+summary(base_model)
+```
+
+## Insights
+- TV and Radio are statistically significant predictors of sales.  
+- Newspaper is not significant.  
+- The model explains about 90% of the variation in sales (Adjusted R² ≈ 0.90).  
+
+---
+
+# Interaction Model
+
+```{r}
+int_model <- lm(sales ~ tv * radio + newspaper, data = ads)
+summary(int_model)
+```
+
+## Insights
+- The TV × Radio interaction is statistically significant.  
+- Combining channels produces stronger results than using them alone.  
+- Adjusted R² ≈ 0.91 (slight improvement over baseline).  
+
+---
+
+# Curved Model (Diminishing Returns Test)
+
+```{r}
+curve_model <- lm(sales ~ tv + I(tv^2) + radio + I(radio^2) + tv:radio, data = ads)
+summary(curve_model)
+```
+
+## Insights
+- The negative TV² term suggests possible diminishing returns.  
+- The dataset lacks higher budget levels to confirm this pattern.  
+- Within the observed range, sales keep increasing with spend.  
+- Adjusted R² ≈ 0.93 (best fit so far).  
+
+---
+
+# Budget Allocation Simulation
+
+```{r}
+total_budget <- 100
+step_size <- 5
+radio_cap <- floor(max(ads$radio))
+
+alloc_grid <- expand.grid(
+  tv = seq(0, total_budget, by = step_size),
+  radio = seq(0, total_budget, by = step_size)
+) %>%
+  filter(tv + radio == total_budget, radio <= radio_cap)
+
+alloc_grid$pred_sales <- predict(curve_model, newdata = alloc_grid)
+
+best_alloc <- alloc_grid %>%
+  arrange(desc(pred_sales)) %>%
+  slice(1)
+
+best_alloc
+```
+
+## Insights
+- Best allocation ≈ TV 55k / Radio 45k.  
+- Predicted sales ≈ 12.1k.  
+- A balanced mix outperforms single-channel spend.  
+
+---
+
+# Visualizations
+
+## Individual vs Combined Impact
+
+```{r fig.width=7, fig.height=5}
+scenarios <- tibble(
+  scenario = c("TV only", "Radio only", "Best Combined"),
+  tv = c(100, 0, best_alloc$tv),
+  radio = c(0, 50, best_alloc$radio)
+) %>%
+  rowwise() %>%
+  mutate(
+    pred_sales = predict(curve_model, newdata = data.frame(tv = tv, radio = radio)),
+    label = paste0(round(pred_sales, 2), "k")
+  ) %>%
+  ungroup()
+
+ggplot(scenarios, aes(x = scenario, y = pred_sales, fill = scenario)) +
+  geom_col(width = 0.6, color = "black") +
+  geom_text(aes(label = label), vjust = -0.6, size = 4) +
+  scale_fill_viridis(discrete = TRUE, option = "viridis") +
+  labs(title = "Individual vs Combined Impact",
+       y = "Predicted Sales (k units)", x = NULL) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+## Insights
+- TV only ≈ 11.6k sales.  
+- Radio only (capped at 50k) ≈ 7.9k.  
+- Best combined ≈ 12.1k sales.  
+
+---
+
+# Heatmap of $100k Allocation (Self‑Contained)
+
+```{r heatmap, fig.width=8.5, fig.height=6}
+# Rebuild grid locally so this chunk never depends on previous chunks
+total_budget <- 100
+step_size <- 5
+radio_cap <- floor(max(ads$radio))
+
+alloc_grid_hm <- expand.grid(
+  tv = seq(0, total_budget, by = step_size),
+  radio = seq(0, total_budget, by = step_size)
+) %>%
+  dplyr::filter(tv + radio == total_budget, radio <= radio_cap)
+
+# Guard against empty grid
+stopifnot(nrow(alloc_grid_hm) > 0)
+
+alloc_grid_hm$pred_sales <- predict(curve_model, newdata = alloc_grid_hm)
+
+best_alloc_hm <- alloc_grid_hm %>%
+  dplyr::arrange(dplyr::desc(pred_sales)) %>%
+  dplyr::slice(1)
+
+ggplot(alloc_grid_hm, aes(tv, radio, fill = pred_sales)) +
+  geom_tile() +
+  geom_contour(aes(z = pred_sales), color = "white", linewidth = 0.4, bins = 8) +
+  geom_point(data = best_alloc_hm, aes(tv, radio),
+             shape = 21, size = 3.5, stroke = 1, color = "black", fill = "white") +
+  geom_label(data = best_alloc_hm,
+             aes(tv, radio, label = paste0("Best: TV $", tv, "k | Radio $", radio, "k | Sales ≈ ", round(pred_sales,2), "k")),
+             hjust = -0.05, vjust = 1.1, label.size = 0, fill = "white", color = "black") +
+  scale_fill_viridis(option = "cividis", name = "Predicted Sales (k)") +
+  labs(title = "Heatmap of $100k Allocation",
+       subtitle = "Best split ≈ 55% TV / 45% Radio",
+       x = "TV Spend ($k)", y = "Radio Spend ($k)") +
+  coord_fixed() +
+  theme_minimal(base_size = 13)
+```
+
+## Insights
+- Heatmap confirms best allocation ≈ 55/45 split.  
+- Newspaper excluded (not predictive).  
+
+---
+
+# Budget Sensitivity (Observed Range)
+
+```{r fig.width=7, fig.height=5}
+budgets <- seq(50, 125, by = 25)
+
+opt_sales <- sapply(budgets, function(b){
+  grid <- expand.grid(
+    tv = seq(0, b, by = 5),
+    radio = seq(0, b, by = 5)
+  ) %>%
+    filter(tv + radio == b, radio <= radio_cap)
+  max(predict(curve_model, newdata = grid))
+})
+
+sensitivity_df <- tibble(budget = budgets, sales = opt_sales)
+
+ggplot(sensitivity_df, aes(budget, sales)) +
+  geom_line(linewidth = 1.2, color = viridis(3)[2]) +
+  geom_point(size = 3, color = viridis(3)[1]) +
+  labs(title = "Budget Sensitivity (Observed Range Only)",
+       x = "Total Budget ($k)", y = "Predicted Sales (k units)") +
+  theme_minimal(base_size = 13)
+```
+
+## Insights
+- From $50k to $125k, predicted sales rise steadily.  
+- No saturation point is visible in this dataset.  
+- More data is needed at higher budgets to test for diminishing returns.  
+
+---
+
+# Recommendations
+
+- Allocate ~$100k across TV and Radio with an optimal split near **55% TV / 45% Radio**.  
+- Do not allocate to Newspaper (no measurable effect in this dataset).  
+- If budgets increase beyond $100k, collect additional data to test for diminishing returns.  
+- Incorporate digital channels in future analyses for completeness.  
+
+---
+
+# Key Insights
+
+- I framed a business question (how to spend a fixed ad budget) as a data problem.  
+- I used regression and simulation to compare scenarios and find an optimal mix.  
+- Multichannel (TV + Radio) outperforms single-channel within the observed range.  
+- I recognized dataset limits and proposed next steps.  
+
+---
